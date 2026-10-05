@@ -1,0 +1,77 @@
+x-app: &app
+  build: .
+  image: test-pay-app
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/postgres
+    RABBITMQ_URL: amqp://rabbit_user:rabbit_pass@rabbitmq:5672/
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:18.6
+    ports:
+      - '5435:5432'
+    volumes:
+      - db-data:/var/lib/postgresql
+    environment:
+      POSTGRES_PASSWORD: password
+    healthcheck:
+      test: [ 'CMD-SHELL', 'pg_isready -U postgres' ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:4.3-management
+    ports:
+      - '5673:5672'
+      - '15673:15672'
+    environment:
+      RABBITMQ_DEFAULT_USER: rabbit_user
+      RABBITMQ_DEFAULT_PASS: rabbit_pass
+    volumes:
+      - rabbit-data:/var/lib/rabbitmq
+    healthcheck:
+      test: [ 'CMD', 'rabbitmq-diagnostics', '-q', 'ping' ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrations:
+    <<: *app
+    command: [ 'alembic', 'upgrade', 'head' ]
+    restart: 'no'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    ports:
+      - '${API_PORT:-8000}:8000'
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+
+  outbox-poller:
+    <<: *app
+    command: [ 'python', '-m', 'internal.poller' ]
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  consumer:
+    <<: *app
+    command: [ 'faststream', 'run', 'internal.consumer:app' ]
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  db-data:
+  rabbit-data:
